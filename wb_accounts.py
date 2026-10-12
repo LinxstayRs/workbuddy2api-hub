@@ -755,7 +755,7 @@ class Account(object):
         }
 
     def save(self, directory):
-        os.makedirs(directory, exist_ok=True)
+        wb_settings.secure_directory(directory)
         safe_uid = re.sub(r"[^A-Za-z0-9_-]", "_", str(self.uid or "")).strip("_ ")
         name = (safe_uid or uuid.uuid4().hex) + ".json"
         path = os.path.abspath(os.path.join(directory, name))
@@ -776,7 +776,9 @@ class Account(object):
                     payload.pop(field, None)
                 with open(tmp, "w", encoding="utf-8") as fh:
                     json.dump(payload, fh, ensure_ascii=False, indent=2)
+                wb_settings.secure_file(tmp)
                 os.replace(tmp, path)
+                wb_settings.secure_file(path)
             except Exception:
                 try:
                     os.unlink(tmp)

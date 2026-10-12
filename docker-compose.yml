@@ -3,8 +3,9 @@
 # 更新：docker compose pull && docker compose up -d
 services:
   wb-proxy:
-    # 追最新稳定版用 :latest；想固定版本可换成具体版本号（如 :v1.6.11）
-    image: ghcr.io/ardeyouxipianyi/workbuddy2api-hub:latest
+    # 从当前已检出的加固源码构建，避免 :latest 静默漂移。
+    build: .
+    image: linxstayrs/workbuddy2api-hub:hardened
     container_name: wb-proxy
     restart: unless-stopped
     # Defaults to root (0:0), i.e. the historical behaviour. To run as your own
@@ -18,8 +19,11 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8788
-      # 留空则启动时自动生成高强度 API Key 写入 ./accounts/settings.json 并打印在启动日志中
-      # - API_KEY=your_secret_key
+      - WB_REQUIRE_PANEL_PASSWORD=1
+      # 必填：至少 12 字符，不能是 admin；请放进 .env/Secret，不要提交明文。
+      - PANEL_PASSWORD=${PANEL_PASSWORD:?set PANEL_PASSWORD (min 12 chars)}
+      # 强烈建议显式设置；留空时仍会生成高强度 Key 并持久化。
+      - API_KEY=${API_KEY:-}
       - TZ=Asia/Shanghai
     volumes:
       # 持久化数据目录：升级与重建容器时绝不丢失配置与用量
