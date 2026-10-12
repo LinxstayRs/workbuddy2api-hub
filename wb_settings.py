@@ -235,17 +235,54 @@ def settings_path(accounts_dir):
     return os.path.join(accounts_dir, "settings.json")
 
 
+def secure_directory(path):
+    """Create a private data directory and tighten it where chmod is available.
+
+    Windows and some mounted filesystems do not implement POSIX mode bits; data
+    persistence must keep working there, so permission hardening is best-effort.
+    """
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except (AttributeError, NotImplementedError, OSError):
+        pass
+    return path
+
+
+def secure_file(path):
+    """Best-effort 0600 permissions for a file containing secrets."""
+    try:
+        if os.path.isfile(path) and not os.path.islink(path):
+            os.chmod(path, 0o600)
+    except (AttributeError, NotImplementedError, OSError):
+        pass
+    return path
+
+
+def harden_accounts_storage(accounts_dir):
+    """Tighten the credential store, including files from older releases."""
+    secure_directory(accounts_dir)
+    try:
+        names = os.listdir(accounts_dir)
+    except OSError:
+        return accounts_dir
+    for name in names:
+        if name.endswith(".json") or ".json." in name:
+            secure_file(os.path.join(accounts_dir, name))
+    return accounts_dir
+
+
 def _digest(password, salt_hex, rounds=PBKDF2_ROUNDS):
     return hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), rounds
     ).hex()
 
 
-# settings.json 的解析结果按 (path, mtime, size) 缓存：请求热路径上它被读约 10
-# 次（prompt_config×2 / api_keys×2 / limits_data×3 / auto_switch_product /
-# upstream_config×2），单次 156~273µs，合计 1.6~2.7ms/请求。所有写入都走 save()
-# 的 os.replace 原子替换，mtime/size 必变，所以面板改动仍然即时生效；save() 里
-# 再主动失效一次，连 mtime 精度粗（FAT 只有 2s）的同尺寸改写也不会读到旧值。
+# settings.json 的解析结果按 (path, mtime_ns, ctime_ns, size, inode) 缓存：请求热路径
+# 上它被读约 10 次（prompt_config×2 / api_keys×2 / limits_data×3 /
+# auto_switch_product / upstream_config×2），单次 156~273µs，合计 1.6~2.7ms/请求。
+# 纳秒时间与 inode 避免快速手改同尺寸文件时浮点 mtime 碰撞；所有正常写入仍走
+# save() 的 os.replace 并主动失效，兼容时间戳粒度较粗的挂载文件系统。
 # 调用方拿到的是顶层浅拷贝：与原实现「每次重新解析、返回值随便改」的语义一致
 # （现网所有 setter 都只改顶层键再 save()，嵌套值按约定只读），改返回值也不会
 # 弄脏缓存。
@@ -261,9 +298,12 @@ def load(accounts_dir):
     path = settings_path(accounts_dir)
     try:
         info = os.stat(path)
-        key = (path, info.st_mtime, info.st_size)
+        key = (path,
+               getattr(info, "st_mtime_ns", int(info.st_mtime * 1_000_000_000)),
+               getattr(info, "st_ctime_ns", int(info.st_ctime * 1_000_000_000)),
+               info.st_size, getattr(info, "st_ino", None))
     except OSError:
-        key = (path, None, None)
+        key = (path, None, None, None, None)
     with _lock:
         if _load_cache["key"] == key:
             return dict(_load_cache["value"])
@@ -285,12 +325,14 @@ def load(accounts_dir):
 def save(accounts_dir, data):
     """Atomic write so a crash cannot leave a half-written settings file."""
     with _lock:
-        os.makedirs(accounts_dir, exist_ok=True)
+        secure_directory(accounts_dir)
         path = settings_path(accounts_dir)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
+        secure_file(tmp)
         os.replace(tmp, path)
+        secure_file(path)
         # 写完主动失效：不依赖文件系统 mtime 的精度（FAT 只有 2s），保证同尺寸
         # 改写的下一个 load() 一定重新读盘。
         _load_cache["key"] = None

@@ -56,6 +56,11 @@ class DockerTests(unittest.TestCase):
         self.assertIn("HEALTHCHECK", text)
         self.assertIn("/health", text)
 
+    def test_public_container_requires_a_panel_password(self):
+        text = read("Dockerfile")
+        self.assertIn("WB_REQUIRE_PANEL_PASSWORD=1", text)
+        self.assertIn("PANEL_PASSWORD", text)
+
     def test_compose_supports_puid_pgid(self):
         text = read("docker-compose.yml")
         self.assertIn("${PUID:-", text)

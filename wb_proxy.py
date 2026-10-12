@@ -22993,8 +22993,9 @@ def _parse_cli_args():
                     help="where the per-account credential files live (default: ./accounts)")
     ap.add_argument("--import-desktop", action="store_true",
                     help="import the desktop app credential as an account, then exit")
-    ap.add_argument("--panel-password", default=None,
-                    help="set the web panel password on startup (default: admin)")
+    ap.add_argument("--panel-password", default=os.environ.get("PANEL_PASSWORD") or None,
+                    help="set the web panel password on startup "
+                         "(default: $PANEL_PASSWORD, then persisted value/admin)")
     ap.add_argument("--probe-only", action="store_true",
                     help="only check whether a proxy already listens on the port and "
                          "print what the launcher should say, then exit "
@@ -23073,6 +23074,28 @@ def _probe_running_instance(args):
         return True
     return False
 
+def _panel_password_required():
+    value = str(os.environ.get("WB_REQUIRE_PANEL_PASSWORD") or "").strip().lower()
+    return value in ("1", "true", "yes", "on", "required")
+
+
+def _validate_deployment_panel_password(args):
+    """Fail closed for public/container deployments that opt into this guard."""
+    if not _panel_password_required():
+        return
+    supplied = str(args.panel_password or "")
+    if supplied:
+        if supplied == wb_settings.DEFAULT_PANEL_PASSWORD or len(supplied) < 12:
+            raise SystemExit(
+                "[SECURITY] PANEL_PASSWORD must be at least 12 characters and "
+                "must not be the default 'admin'.")
+        return
+    if wb_settings.panel_password_is_default(ACCOUNTS_DIR):
+        raise SystemExit(
+            "[SECURITY] PANEL_PASSWORD is required on first public deployment. "
+            "Set a Zeabur/Docker secret with at least 12 characters.")
+
+
 def _bootstrap_runtime(args):
     global POOL, ACCOUNTS_DIR, API_KEY, SYSTEM_PROMPT
     global API_KEY_FILE_SET, SCHEDULER, LOG_STORE
@@ -23081,6 +23104,8 @@ def _bootstrap_runtime(args):
     SYSTEM_PROMPT = args.system_prompt
     if args.accounts_dir:
         ACCOUNTS_DIR = os.path.abspath(args.accounts_dir)
+    wb_settings.harden_accounts_storage(ACCOUNTS_DIR)
+    _validate_deployment_panel_password(args)
     # 日志落库（默认关闭）：在账号池之前初始化，好让「池加载失败」这类最需要
     # 事后留档的启动日志也能进库。关闭时这里只造一个 enabled=False 的空壳，
     # 不建文件、不改日志路径。
